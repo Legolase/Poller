@@ -1,0 +1,11 @@
+{
+  "vpn_list_links": [
+    "https://translated.turbopages.org/proxy_u/de-de.ru.af9d14b3-6ab6b62b-a2683438-74722d776562/https/bitbucket.org/igareck/vpn-configs-for-russia/raw/main/Vless-Reality-White-Lists-Rus-Mobile.txt",
+    "https://raw.githack.com/igareck/vpn-configs-for-russia/main/BLACK_VLESS_RUS_mobile.txt"
+  ],
+  "pause": 15,
+  "target_person_name": [
+    "Govorukhina Anastasia",
+    "Говорухина Анастасия"
+  ]
+}
