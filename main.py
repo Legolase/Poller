@@ -504,6 +504,7 @@ def core_algorithm() -> bool:
             )
             return False
 
+        vpn_works = False
         try:
             session = requests.Session(
                 impersonate=browser, base_url="https://www.missoffice.org", retry=1
@@ -523,6 +524,8 @@ def core_algorithm() -> bool:
             print(
                 "Загружена страница. Ищу целевую персону и выбираю альтернативных допустимых кандидатов..."
             )
+            
+            vpn_works = True
 
             time_for_vote_start = time.time()
             time_for_vote_end = time_for_vote_start + time_for_vote
@@ -607,7 +610,7 @@ def core_algorithm() -> bool:
         except Exception as e:
             print(f"Exception: {e}")
         finally:
-            if pause_between_vote:
+            if vpn_works and pause_between_vote:
                 print(f"Пауза между голосованиями ({pause_between_vote=})")
                 time.sleep(pause_between_vote)
     return True
