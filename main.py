@@ -149,7 +149,7 @@ with open(config_filename, "r", encoding="utf-8") as f:
 
 # Параметры из config.json
 
-SOCKS_PORT = 10808
+SOCKS_PORT = poller_config.get("SOCKS_PORT", 10808)
 disable_sing_box_log = poller_config["disable_sing_box_log"]
 vpn_links = poller_config["vpn_list_links"]
 vpn_configs_update_pause = int(
