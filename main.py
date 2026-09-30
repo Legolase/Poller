@@ -971,7 +971,7 @@ def core_algorithm() -> bool:
     global proxies
     global success_vote
     global max_successful_vote
-    for browser in ["chrome", "firefox", "safari"]:
+    for browser in ["chrome", "firefox", "safari", "edge"]:
         if success_vote >= max_successful_vote:
             print("Максимальное количество голосований было достигнуто.")
             print(
