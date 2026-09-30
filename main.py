@@ -12,6 +12,7 @@ import subprocess
 import tempfile
 import time
 import base64
+import shutil
 from colorama import init, Fore, Back, Style
 
 init()
@@ -90,7 +91,7 @@ class StatusBar:
     """Выводит прогресс и сообщения над строкой состояния."""
 
     def __init__(self, width: int, max_value: int, /):
-        self.__width = width
+        self.__width = max(width - 9, 20) # len("[] 100%") == 7
         self.__max_value = max_value
         self.__value = 0
 
@@ -896,7 +897,9 @@ def find_vote_candidates(page):
     target_person_id = 0
     target_person_key = ""
 
-    status_bar = StatusBar(20, max(len(items), 1))
+    window_size = shutil.get_terminal_size((20, 20))
+
+    status_bar = StatusBar(window_size.columns, max(len(items), 1))
 
     def status_print(*args):
         nonlocal status_bar
