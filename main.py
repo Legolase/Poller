@@ -49,6 +49,17 @@ def print_with_color(s, color=Fore.WHITE, brightness=Style.NORMAL, **kwargs):
     """Печатает сообщение с заданными цветом и яркостью."""
     print(f"{brightness}{color}{s}{Style.RESET_ALL}", **kwargs)
 
+def encodeb64(input: str):
+    input_bytes = input.encode("utf-8")
+    
+    base64_bytes = base64.b64encode(input_bytes)
+    return base64_bytes.decode("utf-8")
+
+def decodeb64(input: str):
+    input_bytes = input.encode("utf-8")
+    
+    base64_bytes = base64.b64decode(input_bytes)
+    return base64_bytes.decode("utf-8")
 
 class FileStorageSet:
     """Хранит уникальные строки и записывает новые значения в файл."""
@@ -62,7 +73,7 @@ class FileStorageSet:
             for line in self.__file.readlines():
                 line = line.strip()
                 if line:
-                    self.__storage.add(line)
+                    self.__storage.add(decodeb64(line))
 
             self.__file.close()
         except FileNotFoundError:
@@ -75,7 +86,7 @@ class FileStorageSet:
             return
 
         self.__storage.add(line)
-        self.__file.write(f"{line}\n")
+        self.__file.write(f"{encodeb64(line)}\n")
         self.__file.flush()
 
     @property
