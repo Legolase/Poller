@@ -510,6 +510,8 @@ def core_algorithm() -> bool:
                 impersonate=browser, base_url="https://www.missoffice.org", retry=1
             )
 
+            print(f'Загружаю страницу... Успешных попыток: {success_vote}')
+
             page = session.get(
                 "/contestants/2026/",
                 headers={
