@@ -164,7 +164,7 @@ vpn_check_timeout = poller_config["vpn_check_timeout"]
 # Конфигурация sing-box и разбор VPN-ссылок
 
 
-def make_config(outbound: dict) -> dict:
+def make_config(outbound: dict, port: int) -> dict:
     """Создаёт конфигурацию sing-box с локальным SOCKS-прокси."""
 
     return {
@@ -179,7 +179,7 @@ def make_config(outbound: dict) -> dict:
                 "type": "socks",
                 "tag": "socks-in",
                 "listen": "127.0.0.1",
-                "listen_port": SOCKS_PORT,
+                "listen_port": port,
             }
         ],
         "outbounds": [outbound],
@@ -770,14 +770,32 @@ config_extractor = {
 }
 vpn_link_pattern = "^([a-z][a-z0-9]*):"
 
-proxies = {
-    "http": f"socks5h://127.0.0.1:{SOCKS_PORT}",
-    "https": f"socks5h://127.0.0.1:{SOCKS_PORT}",
-}
+def update_proxy(port: int):
+    return {
+        "http": f"socks5h://127.0.0.1:{port}",
+        "https": f"socks5h://127.0.0.1:{port}",
+    }
+
+proxies = update_proxy(SOCKS_PORT)
 
 
 # Ожидание запуска sing-box
 
+def is_port_in_use(port: int, host: str = '127.0.0.1') -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind((host, port))
+            s.listen(1)
+            return False  # Порт свободен
+        except OSError:
+            return True   # Порт занят
+          
+def get_free_tcp_port():
+    tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    tcp.bind(('', 0))
+    addr, port = tcp.getsockname()
+    tcp.close()
+    return port
 
 def wait_for_port(port: int, process: subprocess.Popen, timeout=10):
     """Ожидает открытия SOCKS-порта, проверяя состояние процесса."""
@@ -1076,7 +1094,7 @@ while True:
     print('==========================================')
     # used_vpn_links.add(vpn_link)
 
-    print_with_color(f"{vpn_link}", Fore.CYAN)
+    print_with_color(f"{vpn_link}", Fore.CYAN, brightness=Style.BRIGHT)
 
     vpn_protocol = urlsplit(vpn_link)
     config = ""
@@ -1095,8 +1113,30 @@ while True:
     with tempfile.TemporaryDirectory() as tmp:
         config_path = Path(tmp) / "sing-box.json"
 
+        choosen_port = SOCKS_PORT
+        
+        if is_port_in_use(choosen_port):
+            print_with_color(f'Стандартный порт {choosen_port} уже занят.', color=Fore.RED)
+            print('Выключите программу занимающую порт!')
+            print_with_color('Ищу свободный порт...', color=Fore.CYAN, brightness=Style.DIM)
+            
+            while True:
+                try:
+                    choosen_port = get_free_tcp_port()
+                    
+                    if not is_port_in_use(choosen_port):
+                        print_with_color(f'Найден новый порт: {choosen_port}', color=Fore.YELLOW)
+                        break
+                    
+                except Exception as e:
+                    print_with_color('FATAL! Ошибка поиска свободного порта: ', color=Fore.RED, end="")
+                    print(f'{e}')
+                    print('Выключите ненужные программы занимающие все оставшиеся порты.')
+                    print_with_color('Заново ищу свободный порт...', color=Fore.CYAN)
+            
+
         config_path.write_text(
-            json.dumps(make_config(config), indent=2), encoding="utf-8"
+            json.dumps(make_config(config, choosen_port), indent=2), encoding="utf-8"
         )
 
         # Можно сначала проверить сгенерированный конфиг
@@ -1109,12 +1149,19 @@ while True:
                 f"FatalError: config created with vpn_link ({vpn_link}) was created wrongly. Skip"
             )
             continue
+          
+        if is_port_in_use(choosen_port):
+            print_with_color(f'Выбранный порт {choosen_port} заняли во время создания vpn конфиг файла.')
+            vpn_configs.insert(0, vpn_link)
+            print('VPN ссылка возвращена на повторную обработку.')
+            continue
 
         process = subprocess.Popen(["sing-box", "run", "-c", str(config_path)])
 
         try:
-            wait_for_port(SOCKS_PORT, process)
+            wait_for_port(choosen_port, process)
             print("VPN запущен.")
+            proxies = update_proxy(choosen_port)
 
             result = core_algorithm()
 
