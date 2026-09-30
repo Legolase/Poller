@@ -610,11 +610,11 @@ def core_algorithm() -> bool:
         except Exception as e:
             print(f"Exception: {e}")
         finally:
-            if not vpn_works:
-              return True
-            if pause_between_vote:
+            if vpn_works and pause_between_vote:
                 print(f"Пауза между голосованиями ({pause_between_vote=})")
                 time.sleep(pause_between_vote)
+        if not vpn_works:
+            return True
     return True
 
 
