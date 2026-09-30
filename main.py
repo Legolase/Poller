@@ -11,6 +11,7 @@ import socket
 import subprocess
 import tempfile
 import time
+import base64
 from colorama import init, Fore, Back, Style
 
 init()
@@ -156,6 +157,7 @@ time_for_vote = int(poller_config.get("time_for_vote", 15))
 target_person_name = poller_config["target_person_name"]
 max_successful_vote = poller_config["max_successful_vote"]
 pause_between_vote = poller_config["pause_between_vote"]
+vpn_check_timeout = poller_config["vpn_check_timeout"]
 
 
 # Конфигурация sing-box и разбор VPN-ссылок
@@ -318,9 +320,450 @@ def vless_hysteria2(uri: str) -> dict:
 
     return outbound
 
+def vmess_extractor(uri: str) -> dict:
+    if not uri.startswith("vmess://"):
+        raise ValueError("Ожидался vmess:// URI")
+
+    # Стандартный формат v2rayN:
+    # vmess://BASE64(JSON)
+    encoded = uri[len("vmess://"):].split("#", 1)[0]
+    encoded = unquote(encoded)
+
+    # base64 часто приходит без '=' в конце
+    encoded += "=" * (-len(encoded) % 4)
+
+    try:
+        raw = base64.urlsafe_b64decode(encoded).decode("utf-8")
+        cfg = json.loads(raw)
+    except Exception as e:
+        raise ValueError("Некорректный VMess URI") from e
+
+    host = cfg.get("add")
+    uuid = cfg.get("id")
+
+    try:
+        port = int(cfg.get("port"))
+        alter_id = int(cfg.get("aid", 0))
+    except (TypeError, ValueError) as e:
+        raise ValueError("Некорректные port/aid в VMess URI") from e
+
+    if not host or not uuid or not port:
+        raise ValueError(
+            "В VMess URI отсутствуют add, port или id"
+        )
+
+    outbound = {
+        "type": "vmess",
+        "tag": "proxy",
+        "server": host,
+        "server_port": port,
+        "uuid": uuid,
+        "security": cfg.get("scy")
+                    or cfg.get("security")
+                    or "auto",
+        "alter_id": alter_id,
+    }
+
+    # ---------- TLS ----------
+
+    if cfg.get("tls") == "tls":
+        tls = {
+            "enabled": True
+        }
+
+        if sni := cfg.get("sni"):
+            tls["server_name"] = sni
+
+        if fp := cfg.get("fp"):
+            tls["utls"] = {
+                "enabled": True,
+                "fingerprint": fp,
+            }
+
+        if alpn := cfg.get("alpn"):
+            tls["alpn"] = [
+                x for x in alpn.split(",") if x
+            ]
+
+        if str(cfg.get("insecure", "0")).lower() in ("1", "true"):
+            tls["insecure"] = True
+
+        outbound["tls"] = tls
+
+    # ---------- Transport ----------
+
+    transport_type = cfg.get("net", "tcp")
+    path = cfg.get("path", "/")
+    host_header = cfg.get("host", "")
+    header_type = cfg.get("type", "none")
+
+    # plain TCP transport в sing-box не указывается
+    if transport_type == "tcp":
+        # Старый VMess может иметь TCP + HTTP header.
+        # В sing-box HTTP вынесен в отдельный transport.
+        if header_type == "http":
+            transport = {
+                "type": "http",
+                "path": path or "/",
+            }
+
+            if host_header:
+                transport["host"] = [
+                    x for x in host_header.split(",") if x
+                ]
+
+            outbound["transport"] = transport
+
+        elif header_type not in ("", "none"):
+            raise NotImplementedError(
+                f"VMess TCP header {header_type!r} пока не реализован"
+            )
+
+    elif transport_type == "ws":
+        transport = {
+            "type": "ws",
+            "path": path or "/",
+        }
+
+        if host_header:
+            transport["headers"] = {
+                "Host": host_header
+            }
+
+        outbound["transport"] = transport
+
+    elif transport_type == "grpc":
+        outbound["transport"] = {
+            "type": "grpc",
+            "service_name": path or "",
+        }
+
+    elif transport_type in ("h2", "http"):
+        transport = {
+            "type": "http",
+            "path": path or "/",
+        }
+
+        if host_header:
+            transport["host"] = [
+                x for x in host_header.split(",") if x
+            ]
+
+        outbound["transport"] = transport
+
+    elif transport_type == "quic":
+        outbound["transport"] = {
+            "type": "quic"
+        }
+
+    elif transport_type == "httpupgrade":
+        transport = {
+            "type": "httpupgrade",
+            "path": path or "/",
+        }
+
+        if host_header:
+            transport["host"] = host_header
+
+        outbound["transport"] = transport
+
+    else:
+        raise NotImplementedError(
+            f"VMess transport {transport_type!r} пока не реализован"
+        )
+
+    return outbound
+
+
+def trojan_extractor(uri: str) -> dict:
+    u = urlsplit(uri)
+
+    if u.scheme != "trojan":
+        raise ValueError("Ожидался trojan:// URI")
+
+    host = u.hostname
+    port = u.port
+
+    # Берём всю userinfo-часть как пароль.
+    if "@" not in u.netloc:
+        raise ValueError("В Trojan URI отсутствует password")
+
+    password = unquote(
+        u.netloc.rsplit("@", 1)[0]
+    )
+
+    if not password or not host or not port:
+        raise ValueError(
+            "В Trojan URI отсутствуют password, host или port"
+        )
+
+    q = {
+        key: values[0]
+        for key, values in parse_qs(u.query).items()
+    }
+
+    outbound = {
+        "type": "trojan",
+        "tag": "proxy",
+        "server": host,
+        "server_port": port,
+        "password": password,
+    }
+
+    # ---------- TLS / Reality ----------
+
+    security = q.get("security", "tls")
+
+    if security in ("tls", "reality"):
+        tls = {
+            "enabled": True
+        }
+
+        if sni := q.get("sni"):
+            tls["server_name"] = sni
+
+        if fp := q.get("fp"):
+            tls["utls"] = {
+                "enabled": True,
+                "fingerprint": fp,
+            }
+
+        if alpn := q.get("alpn"):
+            tls["alpn"] = [
+                x for x in alpn.split(",") if x
+            ]
+
+        if q.get("insecure") in ("1", "true", "True"):
+            tls["insecure"] = True
+
+        if security == "reality":
+            public_key = q.get("pbk")
+
+            if not public_key:
+                raise ValueError(
+                    "Для Trojan Reality требуется pbk"
+                )
+
+            tls["reality"] = {
+                "enabled": True,
+                "public_key": public_key,
+            }
+
+            if sid := q.get("sid"):
+                tls["reality"]["short_id"] = sid
+
+        outbound["tls"] = tls
+
+    elif security != "none":
+        raise ValueError(
+            f"Неизвестный security={security!r}"
+        )
+
+    # ---------- Transport ----------
+
+    transport_type = q.get("type", "tcp")
+
+    if transport_type == "tcp":
+        pass
+
+    elif transport_type == "ws":
+        transport = {
+            "type": "ws",
+            "path": q.get("path", "/"),
+        }
+
+        if host_header := q.get("host"):
+            transport["headers"] = {
+                "Host": host_header
+            }
+
+        outbound["transport"] = transport
+
+    elif transport_type == "grpc":
+        outbound["transport"] = {
+            "type": "grpc",
+            "service_name": q.get("serviceName", ""),
+        }
+
+    elif transport_type in ("http", "h2"):
+        transport = {
+            "type": "http",
+            "path": q.get("path", "/"),
+        }
+
+        if host_header := q.get("host"):
+            transport["host"] = [
+                x for x in host_header.split(",") if x
+            ]
+
+        outbound["transport"] = transport
+
+    elif transport_type == "quic":
+        outbound["transport"] = {
+            "type": "quic"
+        }
+
+    elif transport_type == "httpupgrade":
+        transport = {
+            "type": "httpupgrade",
+            "path": q.get("path", "/"),
+        }
+
+        if host_header := q.get("host"):
+            transport["host"] = host_header
+
+        outbound["transport"] = transport
+
+    else:
+        raise NotImplementedError(
+            f"Trojan transport {transport_type!r} пока не реализован"
+        )
+
+    return outbound
+
+
+def shadowsocks_extractor(uri: str) -> dict:
+    if not uri.startswith("ss://"):
+        raise ValueError("Ожидался ss:// URI")
+
+    def decode_base64(value: str) -> str:
+        value = unquote(value)
+        value += "=" * (-len(value) % 4)
+
+        try:
+            return base64.urlsafe_b64decode(value).decode("utf-8")
+        except Exception as e:
+            raise ValueError(
+                "Некорректная Base64-строка в Shadowsocks URI"
+            ) from e
+
+    def parse_host_port(value: str):
+        # urlsplit умеет корректно разобрать hostname:port,
+        # включая IPv6 в квадратных скобках.
+        parsed = urlsplit("//" + value)
+
+        host = parsed.hostname
+        port = parsed.port
+
+        if not host or not port:
+            raise ValueError(
+                "В Shadowsocks URI отсутствуют host или port"
+            )
+
+        return host, port
+
+    body = uri[len("ss://"):]
+
+    # Убираем fragment (#name)
+    body = body.split("#", 1)[0]
+
+    # ---------------- SIP002 ----------------
+    #
+    # ss://BASE64(method:password)@host:port
+    # ss://method:password@host:port
+    #
+    if "@" in body:
+        authority, _, query = body.partition("?")
+
+        userinfo, host_port = authority.rsplit("@", 1)
+
+        # Возможен завершающий /
+        host_port = host_port.rstrip("/")
+
+        host, port = parse_host_port(host_port)
+
+        decoded_userinfo = unquote(userinfo)
+
+        # Plain form:
+        # method:password
+        if ":" in decoded_userinfo:
+            method, password = decoded_userinfo.split(":", 1)
+
+            method = unquote(method)
+            password = unquote(password)
+
+        # Base64 form:
+        # BASE64(method:password)
+        else:
+            decoded_userinfo = decode_base64(userinfo)
+
+            if ":" not in decoded_userinfo:
+                raise ValueError(
+                    "В Shadowsocks userinfo отсутствует method:password"
+                )
+
+            method, password = decoded_userinfo.split(":", 1)
+
+        q = parse_qs(query)
+
+    # ---------------- Legacy ----------------
+    #
+    # ss://BASE64(method:password@host:port)
+    #
+    else:
+        encoded, _, query = body.partition("?")
+
+        decoded = decode_base64(encoded.rstrip("/"))
+
+        if "@" not in decoded:
+            raise ValueError(
+                "Некорректный legacy Shadowsocks URI"
+            )
+
+        method_password, host_port = decoded.rsplit("@", 1)
+
+        if ":" not in method_password:
+            raise ValueError(
+                "В Shadowsocks URI отсутствует method:password"
+            )
+
+        method, password = method_password.split(":", 1)
+
+        host, port = parse_host_port(host_port)
+
+        q = parse_qs(query)
+
+    if not method or not password:
+        raise ValueError(
+            "В Shadowsocks URI отсутствуют method или password"
+        )
+
+    outbound = {
+        "type": "shadowsocks",
+        "tag": "proxy",
+        "server": host,
+        "server_port": port,
+        "method": method,
+        "password": password,
+    }
+
+    # ---------- SIP003 plugin ----------
+
+    if plugin_values := q.get("plugin"):
+        plugin_string = unquote(plugin_values[0])
+
+        parts = plugin_string.split(";")
+
+        plugin_name = parts[0]
+
+        if plugin_name:
+            outbound["plugin"] = plugin_name
+
+        if len(parts) > 1:
+            outbound["plugin_opts"] = ";".join(parts[1:])
+
+    return outbound
+
 
 config_extractor = {
     "vless": vless_extractor,
+
+    "vmess": vmess_extractor,
+
+    "trojan": trojan_extractor,
+    
+    "ss": shadowsocks_extractor,
+
     "hysteria2": vless_hysteria2,
     "hy2": vless_hysteria2,
 }
@@ -518,7 +961,7 @@ def core_algorithm() -> bool:
                     "Accept-Language": "en-US,en;q=0.9",
                 },
                 proxies=proxies,
-                timeout=10,
+                timeout=vpn_check_timeout,
             )
 
             page.raise_for_status()

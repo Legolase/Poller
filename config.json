@@ -1,6 +1,6 @@
 {
   "vpn_list_links": [
-    "https://translated.turbopages.org/proxy_u/de-de.ru.af9d14b3-6ab6b62b-a2683438-74722d776562/https/bitbucket.org/igareck/vpn-configs-for-russia/raw/main/Vless-Reality-White-Lists-Rus-Mobile.txt",
+    "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/Vless-Reality-White-Lists-Rus-Mobile.txt",
     "https://raw.githack.com/igareck/vpn-configs-for-russia/main/BLACK_VLESS_RUS_mobile.txt"
   ],
   "vpn_configs_update_pause": 20,
@@ -11,5 +11,6 @@
   ],
   "disable_sing_box_log": true,
   "max_successful_vote": 7,
-  "pause_between_vote": 10
+  "pause_between_vote": 10,
+  "vpn_check_timeout": 3
 }
