@@ -1114,10 +1114,11 @@ while True:
             print("VPN запущен.")
 
             result = core_algorithm()
-            used_vpn_links.add(vpn_link)
 
             if not result:
                 break
+            
+            used_vpn_links.add(vpn_link)
 
             print("=========================================")
         finally:
