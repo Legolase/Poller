@@ -61,6 +61,44 @@ def decodeb64(input: str):
     base64_bytes = base64.b64decode(input_bytes)
     return base64_bytes.decode("utf-8")
 
+# Вывод форматированной разницы временных меток
+time_start = time.time()
+
+def format_time_diff(diff: float):
+    result = ""
+
+    val = diff * 1000
+
+    result = f'{int(val % 1000):0>3d}'
+    val = val // 1000
+    
+    result = f'{int(val % 60):0>2d}.{result}'
+    val = val // 60
+    
+    result = f'{int(val % 60):0>2d}:{result}'
+    val = val // 60
+    
+    result = f'{int(val):0>2d}:{result}'
+    
+    return result
+  
+def time_log(print_func):
+    def wrapper(*args, **kwargs):
+        print_func(f'[{format_time_diff(time.time() - time_start)}] ', end="")
+        print_func(*args, **kwargs)
+    
+    return wrapper
+
+@time_log
+def log(*args, **kwargs):
+    print(*args, **kwargs)
+
+@time_log
+def log_with_color(*args, **kwargs):
+    print_with_color(*args, **kwargs)
+    
+# Вспомогательные классы
+
 class FileStorageSet:
     """Хранит уникальные строки и записывает новые значения в файл."""
 
@@ -97,12 +135,11 @@ class FileStorageSet:
         self.__file.flush()
         self.__file.close()
 
-
 class StatusBar:
     """Выводит прогресс и сообщения над строкой состояния."""
 
     def __init__(self, width: int, max_value: int, /):
-        self.__width = max(width - 9, 20) # len("[] 100%") == 7
+        self.__width = max(width - 22, 20) # len("[] 100%") == 7
         self.__max_value = max_value
         self.__value = 0
 
@@ -121,7 +158,7 @@ class StatusBar:
         percent = (self.__value * 100) // self.__max_value
 
         self.__clear()
-        print(f"[{'#' * filled_len}{'-' * tail_len}] {percent}%")
+        log(f"[{'#' * filled_len}{'-' * tail_len}] {percent}%")
 
     @property
     def value(self):
@@ -144,9 +181,9 @@ class StatusBar:
 
         self.__update()
 
-    def print(self, *args):
+    def log(self, *args):
         self.__clear()
-        print(*args, "\n")
+        log(*args, "\n")
         self.__update()
 
 
@@ -170,7 +207,6 @@ target_person_name = poller_config["target_person_name"]
 max_successful_vote = poller_config["max_successful_vote"]
 pause_between_vote = poller_config["pause_between_vote"]
 vpn_check_timeout = poller_config["vpn_check_timeout"]
-
 
 # Конфигурация sing-box и разбор VPN-ссылок
 
@@ -836,7 +872,6 @@ target_person_id = 0
 target_person_key = 0
 success_vote = 0
 
-
 # Загрузка и обновление VPN-ссылок
 
 
@@ -847,14 +882,14 @@ def update_configs_attempt():
 
     extracted_vpn_configs = []
     for vpn_link in vpn_links:
-        print("Process link: ", end="")
+        log("Process link: ", end="")
         print_with_color(f"{vpn_link}", color=Fore.YELLOW)
         try:
             r = orequests.get(vpn_link, timeout=15)
 
             r.raise_for_status()
 
-            print_with_color("Succesfully load VPN links", color=Fore.GREEN)
+            log_with_color("Succesfully load VPN links", color=Fore.GREEN)
 
             for line in r.text.splitlines():
                 line = line.strip()
@@ -863,7 +898,7 @@ def update_configs_attempt():
                     extracted_vpn_configs.append(line)
 
         except orequests.RequestException as e:
-            print("Extract links failed: ", end="")
+            log("Extract links failed: ", end="")
             print_with_color(f"{e}", color=Fore.RED)
 
     return extracted_vpn_configs
@@ -877,11 +912,11 @@ def update_configs():
     global last_configs_update
 
     while len(vpn_configs) == 0:
-        print_with_color("Обновляю конфиги VPN...", color=Fore.MAGENTA)
+        log_with_color("Обновляю конфиги VPN...", color=Fore.MAGENTA)
         time_passed_from_last_update = time.time() - last_configs_update
         if time_passed_from_last_update < vpn_configs_update_pause:
             left_time = vpn_configs_update_pause - time_passed_from_last_update
-            print(
+            log(
                 f"Недавно обновлял. Подожду {int(left_time)} секунд до следующей попытки."
             )
             time.sleep(left_time)
@@ -899,14 +934,14 @@ def update_configs():
 
         if len(vpn_configs) > 0:
             last_configs_update = time.time()
-            print("VPN конфиги обновлены!")
-            print("==================================================")
+            log("VPN конфиги обновлены!")
+            log("==================================================")
             break
 
-        print(
+        log(
             f"Выгруженные VPN конфиги уже использовались. Подожду ещё {int(vpn_configs_update_pause / 60)} минут."
         )
-        print(
+        log(
             f'  P.S. Если это сообщение часто появляется, то либо увеличьте параметр "vpn_configs_update_pause", либо добавьте ещё подписок в "vpn_list_links"'
         )
         time.sleep(vpn_configs_update_pause)
@@ -932,10 +967,11 @@ def find_vote_candidates(page):
 
     def status_print(*args):
         nonlocal status_bar
-        status_bar.print(*args)
+        status_bar.log(*args)
 
     for item in items:
         # Сохраняем текущую задержку при просмотре участников.
+        time.sleep(0.01) # Прогресс статус бара станет заметным
         status_bar.value = status_bar.value + 1
 
         person_id = item.get("data-id")
@@ -972,8 +1008,8 @@ def core_algorithm() -> bool:
     global max_successful_vote
     for browser in ["chrome", "firefox", "safari", "edge"]:
         if success_vote >= max_successful_vote:
-            print("Максимальное количество голосований было достигнуто.")
-            print(
+            log("Максимальное количество голосований было достигнуто.")
+            log(
                 '  P.S. Если за один запуск программы нужно другое кол-во голосов, то поменяйте в конфиге "max_successful_vote"'
             )
             return False
@@ -984,7 +1020,7 @@ def core_algorithm() -> bool:
                 impersonate=browser, base_url="https://www.missoffice.org", retry=1
             )
 
-            print(f'Загружаю страницу... Успешных попыток: {success_vote}')
+            log(f'Загружаю страницу... Успешных попыток: {success_vote}')
 
             page = session.get(
                 "/contestants/2026/",
@@ -997,7 +1033,7 @@ def core_algorithm() -> bool:
 
             page.raise_for_status()
 
-            print(
+            log(
                 "Загружена страница. Ищу целевую персону и выбираю альтернативных допустимых кандидатов..."
             )
             
@@ -1011,18 +1047,18 @@ def core_algorithm() -> bool:
             )
 
             if target_person_id == 0:
-                print_with_color(
+                log_with_color(
                     f"{target_person_name[0]} не найден(а) в списке участников. Проверьте config.json на опечатки в имени.",
                     color=Fore.YELLOW,
                 )
-                print(
+                log(
                     "При игнорировании данного сообщения поиск продолжится по указанному имени."
                 )
                 time.sleep(3)
                 continue
 
             if len(available_persons) < 2:
-                print_with_color(
+                log_with_color(
                     "Подходящие альтернативные два участника для голосования не найдены. Проверьте условие фильтрации либо целевую страницу для голосования.",
                     color=Fore.RED,
                 )
@@ -1040,7 +1076,7 @@ def core_algorithm() -> bool:
 
             if time.time() < time_for_vote_end:
                 awaiting = time_for_vote_end - time.time()
-                print(
+                log(
                     f"Запрос готов. Ожидание перед отправкой: {int(awaiting)} секунд")
                 time.sleep(awaiting)
             
@@ -1068,26 +1104,26 @@ def core_algorithm() -> bool:
             )
             r.raise_for_status()
 
-            print("Проголосовал.")
+            log("Проголосовал.")
 
             response_data = r.json()
 
             if response_data.get("status", 0) == 1:
                 success_vote = success_vote + 1
-                print_with_color(
+                log_with_color(
                     "Success", color=Fore.GREEN, brightness=Style.BRIGHT, end=""
                 )
                 print(f". Counter: {success_vote}")
                 if pause_between_vote:
-                    print(f"Пауза между голосованиями ({pause_between_vote=})")
+                    log(f"Пауза между голосованиями ({pause_between_vote=})")
                     time.sleep(pause_between_vote)
             else:
-                print_with_color(
+                log_with_color(
                     "Failed", color=Fore.RED, brightness=Style.BRIGHT, end=""
                 )
                 print(": ", response_data)
         except Exception as e:
-            print(f"Exception: {e}")
+            log(f"Exception: {e}")
 
         if not vpn_works:
             return True
@@ -1100,12 +1136,12 @@ def main():
     while True:
         update_configs()
 
-        print("Выбираю новую ссылку")
+        log("Выбираю новую ссылку")
         vpn_link = vpn_configs.pop(0)
-        print('==========================================')
+        log('==========================================')
         # used_vpn_links.add(vpn_link)
 
-        print_with_color(f"{vpn_link}", Fore.CYAN, brightness=Style.BRIGHT)
+        log_with_color(f"{vpn_link}", Fore.CYAN, brightness=Style.BRIGHT)
 
         vpn_protocol = urlsplit(vpn_link)
         config = ""
@@ -1113,11 +1149,11 @@ def main():
             try:
                 config = config_extractor[vpn_protocol.scheme](vpn_link)
             except Exception as e:
-                print(f"Extracting config from link error: {e}")
+                log(f"Extracting config from link error: {e}")
                 used_vpn_links.add(vpn_link)
                 continue
         else:
-            print(f'VPN protocol "{vpn_protocol.scheme}" is unsupported')
+            log(f'VPN protocol "{vpn_protocol.scheme}" is unsupported')
             used_vpn_links.add(vpn_link)
             continue
 
@@ -1127,23 +1163,23 @@ def main():
             choosen_port = SOCKS_PORT
             
             if is_port_in_use(choosen_port):
-                print_with_color(f'Стандартный порт {choosen_port} уже занят.', color=Fore.RED)
-                print('Выключите программу занимающую порт!')
-                print_with_color('Ищу свободный порт...', color=Fore.CYAN, brightness=Style.DIM)
+                log_with_color(f'Стандартный порт {choosen_port} уже занят.', color=Fore.RED)
+                log('Выключите программу занимающую порт!')
+                log_with_color('Ищу свободный порт...', color=Fore.CYAN, brightness=Style.DIM)
                 
                 while True:
                     try:
                         choosen_port = get_free_tcp_port()
                         
                         if not is_port_in_use(choosen_port):
-                            print_with_color(f'Найден новый порт: {choosen_port}', color=Fore.YELLOW)
+                            log_with_color(f'Найден новый порт: {choosen_port}', color=Fore.YELLOW)
                             break
                         
                     except Exception as e:
-                        print_with_color('FATAL! Ошибка поиска свободного порта: ', color=Fore.RED, end="")
+                        log_with_color('FATAL! Ошибка поиска свободного порта: ', color=Fore.RED, end="")
                         print(f'{e}')
-                        print('Выключите ненужные программы занимающие все оставшиеся порты.')
-                        print_with_color('Заново ищу свободный порт...', color=Fore.CYAN)
+                        log('Выключите ненужные программы занимающие все оставшиеся порты.')
+                        log_with_color('Заново ищу свободный порт...', color=Fore.CYAN)
                 
 
             config_path.write_text(
@@ -1156,22 +1192,22 @@ def main():
             )
 
             if check_run_result.returncode != 0:
-                print(
+                log(
                     f"FatalError: config created with vpn_link ({vpn_link}) was created wrongly. Skip"
                 )
                 continue
               
             if is_port_in_use(choosen_port):
-                print_with_color(f'Выбранный порт {choosen_port} заняли во время создания vpn конфиг файла.')
+                log_with_color(f'Выбранный порт {choosen_port} заняли во время создания vpn конфиг файла.')
                 vpn_configs.insert(0, vpn_link)
-                print('VPN ссылка возвращена на повторную обработку.')
+                log('VPN ссылка возвращена на повторную обработку.')
                 continue
 
             process = subprocess.Popen(["sing-box", "run", "-c", str(config_path)])
 
             try:
                 wait_for_port(choosen_port, process)
-                print("VPN запущен.")
+                log("VPN запущен.")
                 proxies = update_proxy(choosen_port)
 
                 result = core_algorithm()
@@ -1181,7 +1217,7 @@ def main():
                 
                 used_vpn_links.add(vpn_link)
 
-                print("=========================================")
+                log("=========================================")
             finally:
                 process.terminate()
 
@@ -1189,28 +1225,5 @@ def main():
                     process.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     process.kill()
-
-def format_time_diff(diff: float):
-    result = ""
-
-    val = diff * 1000
-
-    result = f'{int(val % 1000):0>3d}'
-    val = val // 1000
-    
-    result = f'{int(val % 60):0>2d}.{result}'
-    val = val // 60
-    
-    result = f'{int(val % 60):0>2d}:{result}'
-    val = val // 60
-    
-    result = f'{int(val)}:{result}'
-    
-    return result
   
-main_start_time = time.time()
 main()
-main_end_time = time.time()
-spend_time = main_end_time - main_start_time
-
-print(f'Время работы: {format_time_diff(spend_time)}\n')
