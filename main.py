@@ -1078,6 +1078,9 @@ def core_algorithm() -> bool:
                     "Success", color=Fore.GREEN, brightness=Style.BRIGHT, end=""
                 )
                 print(f". Counter: {success_vote}")
+                if pause_between_vote:
+                    print(f"Пауза между голосованиями ({pause_between_vote=})")
+                    time.sleep(pause_between_vote)
             else:
                 print_with_color(
                     "Failed", color=Fore.RED, brightness=Style.BRIGHT, end=""
@@ -1085,10 +1088,7 @@ def core_algorithm() -> bool:
                 print(": ", response_data)
         except Exception as e:
             print(f"Exception: {e}")
-        finally:
-            if vpn_works and pause_between_vote:
-                print(f"Пауза между голосованиями ({pause_between_vote=})")
-                time.sleep(pause_between_vote)
+
         if not vpn_works:
             return True
     return True
@@ -1214,4 +1214,3 @@ main_end_time = time.time()
 spend_time = main_end_time - main_start_time
 
 print(f'Время работы: {format_time_diff(spend_time)}\n')
-
