@@ -165,7 +165,7 @@ disable_sing_box_log = poller_config["disable_sing_box_log"]
 vpn_links = poller_config["vpn_list_links"]
 vpn_configs_update_pause = int(
     poller_config.get("vpn_configs_update_pause", 15)) * 60
-time_for_vote = int(poller_config.get("time_for_vote", 15))
+time_for_vote = poller_config.get("time_for_vote", {'min': 1, 'max': 15})
 target_person_name = poller_config["target_person_name"]
 max_successful_vote = poller_config["max_successful_vote"]
 pause_between_vote = poller_config["pause_between_vote"]
@@ -936,7 +936,6 @@ def find_vote_candidates(page):
 
     for item in items:
         # Сохраняем текущую задержку при просмотре участников.
-        time.sleep(0.01)
         status_bar.value = status_bar.value + 1
 
         person_id = item.get("data-id")
@@ -1005,7 +1004,7 @@ def core_algorithm() -> bool:
             vpn_works = True
 
             time_for_vote_start = time.time()
-            time_for_vote_end = time_for_vote_start + time_for_vote
+            time_for_vote_end = time_for_vote_start + max(0, random.randint(time_for_vote['min'], time_for_vote['max']))
 
             target_person_id, target_person_key, available_persons = (
                 find_vote_candidates(page)
