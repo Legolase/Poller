@@ -14,6 +14,8 @@ import time
 import base64
 import shutil
 from colorama import init, Fore, Back, Style
+from concurrent.futures import ThreadPoolExecutor
+from itertools import repeat, compress
 
 init()
 
@@ -186,7 +188,6 @@ class StatusBar:
         log(*args, "\n")
         self.__update()
 
-
 # Настройки приложения
 
 config_filename = "./config.json"
@@ -207,6 +208,7 @@ target_person_name = poller_config["target_person_name"]
 max_successful_vote = poller_config["max_successful_vote"]
 pause_between_vote = poller_config["pause_between_vote"]
 vpn_check_timeout = poller_config["vpn_check_timeout"]
+vpn_test_batch = int(max(1, poller_config.get("vpn_test_batch", 10)))
 
 # Конфигурация sing-box и разбор VPN-ссылок
 
@@ -232,7 +234,6 @@ def make_config(outbound: dict, port: int) -> dict:
         "outbounds": [outbound],
         "route": {"final": "proxy"},
     }
-
 
 def vless_extractor(uri: str) -> dict:
     """Преобразует VLESS-ссылку в outbound для sing-box."""
@@ -333,7 +334,6 @@ def vless_extractor(uri: str) -> dict:
             f"Transport {transport_type!r} пока не реализован")
 
     return outbound
-
 
 def vless_hysteria2(uri: str) -> dict:
     """Преобразует Hysteria2-ссылку в outbound для sing-box."""
@@ -522,7 +522,6 @@ def vmess_extractor(uri: str) -> dict:
 
     return outbound
 
-
 def trojan_extractor(uri: str) -> dict:
     u = urlsplit(uri)
 
@@ -668,7 +667,6 @@ def trojan_extractor(uri: str) -> dict:
         )
 
     return outbound
-
 
 def shadowsocks_extractor(uri: str) -> dict:
     if not uri.startswith("ss://"):
@@ -825,7 +823,6 @@ def update_proxy(port: int):
 
 proxies = update_proxy(SOCKS_PORT)
 
-
 # Ожидание запуска sing-box
 
 def is_port_in_use(port: int, host: str = '127.0.0.1') -> bool:
@@ -862,6 +859,135 @@ def wait_for_port(port: int, process: subprocess.Popen, timeout=10):
 
     raise TimeoutError("sing-box не поднял SOCKS-порт")
 
+# Проверка списка VPN'ов на доступность по сайту
+
+def worker_test_config_by_proxy(process: subprocess.Popen, proxy, port, site: str) -> bool:
+    try:
+        wait_for_port(port, process)
+      
+        page = requests.get(
+            site,
+            headers={
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+            proxies=proxy,
+            timeout=vpn_check_timeout,
+        )
+        
+        page.raise_for_status()
+        
+        return True
+    except Exception as e:
+        return False
+    finally:
+        process.terminate()
+                                    
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+      
+
+def test_vpn_configs_files(batch_config_filepath_with_port: list, site: str):
+    processes = []
+    proxies = []
+    
+    for config, port in batch_config_filepath_with_port:
+        processes.append(subprocess.Popen(["sing-box", "run", "-c", str(config)]))
+        proxies.append(update_proxy(port))
+    
+    with ThreadPoolExecutor(max_workers=len(batch_config_filepath_with_port)) as executor:
+        ports = [port for (_, port) in batch_config_filepath_with_port]
+        result_vpn = list(executor.map(worker_test_config_by_proxy, processes, proxies, ports, repeat(site)))
+        
+        return result_vpn
+                    
+def filter_working_vpn_links(configs: list, site: str) -> list:
+    valid_vpn_links = []
+    vpn_links_to_test = list(configs)
+    
+    window_size = shutil.get_terminal_size((20, 20))
+    
+    status_bar = StatusBar(window_size.columns, max(len(configs), 1))
+    
+    def status_print(*args):
+        nonlocal status_bar
+        status_bar.log(*args)
+
+    for batch_start in range(0, len(vpn_links_to_test), vpn_test_batch):
+        batch_links = vpn_links_to_test[
+            batch_start:batch_start + vpn_test_batch
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            test_entries = []
+
+            for vpn_link in batch_links:
+                status_bar.value = status_bar.value + 1
+                scheme = urlsplit(vpn_link).scheme
+                extractor = config_extractor.get(scheme)
+
+                if extractor is None:
+                    status_print(f'VPN protocol "{scheme}" is unsupported')
+                    used_vpn_links.add(vpn_link)
+                    continue
+
+                try:
+                    outbound_config = extractor(vpn_link)
+                except Exception as e:
+                    status_print(f"Extracting config from link error: {e}")
+                    used_vpn_links.add(vpn_link)
+                    continue
+
+                port = get_free_tcp_port()
+
+                config_path = (
+                    Path(tmp_dir)
+                    / f"sing-box_{len(test_entries)}.json"
+                )
+
+                config_path.write_text(
+                    json.dumps(
+                        make_config(outbound_config, port),
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+
+                check_result = subprocess.run(
+                    ["sing-box", "check", "-c", str(config_path)]
+                )
+
+                if check_result.returncode != 0:
+                    status_print(
+                        f"FatalError: config created from vpn_link "
+                        f"({vpn_link}) is invalid. Skip"
+                    )
+                    continue
+
+                test_entries.append(
+                    (vpn_link, config_path, port)
+                )
+
+            if not test_entries:
+                continue
+
+            test_results = test_vpn_configs_files(
+                [
+                    (config_path, port)
+                    for _, config_path, port in test_entries
+                ],
+                site,
+            )
+
+            valid_vpn_links.extend(
+                vpn_link
+                for (vpn_link, _, _), is_valid
+                in zip(test_entries, test_results)
+                if is_valid
+            )
+
+    return valid_vpn_links
 
 # Общее состояние
 
@@ -931,6 +1057,9 @@ def update_configs():
                 if link not in used_vpn_links.storage
             )
         )
+        
+        log('Тестирую пинг конфигов. Может занять некоторое время...')
+        vpn_configs = filter_working_vpn_links(vpn_configs, "https://www.missoffice.org/contestants/2026/")
 
         if len(vpn_configs) > 0:
             last_configs_update = time.time()
@@ -1129,92 +1258,98 @@ def core_algorithm() -> bool:
             return True
     return True
 
-
 # Основной цикл: выбор VPN, запуск sing-box и голосование
 
+def get_available_port():
+    selected_port = SOCKS_PORT
+    
+    if is_port_in_use(selected_port):
+        log_with_color(
+            f"Стандартный порт {selected_port} уже занят.",
+            color=Fore.RED,
+        )
+        log("Выключите программу занимающую порт!")
+        log_with_color(
+            "Ищу свободный порт...",
+            color=Fore.CYAN,
+            brightness=Style.DIM,
+        )
+
+        while True:
+            try:
+                selected_port = get_free_tcp_port()
+
+                if not is_port_in_use(selected_port):
+                    log_with_color(
+                        f"Найден новый порт: {selected_port}",
+                        color=Fore.YELLOW,
+                    )
+                    break
+
+            except Exception as e:
+                log_with_color(
+                    "FATAL! Ошибка поиска свободного порта: ",
+                    color=Fore.RED,
+                    end="",
+                )
+                print(e)
+
+                log(
+                    "Выключите ненужные программы "
+                    "занимающие все оставшиеся порты."
+                )
+                log_with_color(
+                    "Заново ищу свободный порт...",
+                    color=Fore.CYAN,
+                )
+        
+    return selected_port
+
 def main():
+    global proxies
+
     while True:
         update_configs()
 
         log("Выбираю новую ссылку")
         vpn_link = vpn_configs.pop(0)
-        log('==========================================')
-        # used_vpn_links.add(vpn_link)
 
-        log_with_color(f"{vpn_link}", Fore.CYAN, brightness=Style.BRIGHT)
+        log("==========================================")
+        log_with_color(
+            vpn_link,
+            Fore.CYAN,
+            brightness=Style.BRIGHT,
+        )
 
-        vpn_protocol = urlsplit(vpn_link)
-        config = ""
-        if vpn_protocol.scheme in config_extractor.keys():
-            try:
-                config = config_extractor[vpn_protocol.scheme](vpn_link)
-            except Exception as e:
-                log(f"Extracting config from link error: {e}")
-                used_vpn_links.add(vpn_link)
-                continue
-        else:
-            log(f'VPN protocol "{vpn_protocol.scheme}" is unsupported')
-            used_vpn_links.add(vpn_link)
-            continue
+        # Ссылка уже была проверена в filter_working_vpn_links()
+        scheme = urlsplit(vpn_link).scheme
+        outbound_config = config_extractor[scheme](vpn_link)
 
-        with tempfile.TemporaryDirectory() as tmp:
-            config_path = Path(tmp) / "sing-box.json"
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            config_path = Path(tmp_dir) / "sing-box.json"
 
-            choosen_port = SOCKS_PORT
-            
-            if is_port_in_use(choosen_port):
-                log_with_color(f'Стандартный порт {choosen_port} уже занят.', color=Fore.RED)
-                log('Выключите программу занимающую порт!')
-                log_with_color('Ищу свободный порт...', color=Fore.CYAN, brightness=Style.DIM)
-                
-                while True:
-                    try:
-                        choosen_port = get_free_tcp_port()
-                        
-                        if not is_port_in_use(choosen_port):
-                            log_with_color(f'Найден новый порт: {choosen_port}', color=Fore.YELLOW)
-                            break
-                        
-                    except Exception as e:
-                        log_with_color('FATAL! Ошибка поиска свободного порта: ', color=Fore.RED, end="")
-                        print(f'{e}')
-                        log('Выключите ненужные программы занимающие все оставшиеся порты.')
-                        log_with_color('Заново ищу свободный порт...', color=Fore.CYAN)
-                
+            selected_port = get_available_port()
 
             config_path.write_text(
-                json.dumps(make_config(config, choosen_port), indent=2), encoding="utf-8"
+                json.dumps(
+                    make_config(outbound_config, selected_port),
+                    indent=2,
+                ),
+                encoding="utf-8",
             )
 
-            # Можно сначала проверить сгенерированный конфиг
-            check_run_result = subprocess.run(
-                ["sing-box", "check", "-c", str(config_path)],
+            process = subprocess.Popen(
+                ["sing-box", "run", "-c", str(config_path)]
             )
-
-            if check_run_result.returncode != 0:
-                log(
-                    f"FatalError: config created with vpn_link ({vpn_link}) was created wrongly. Skip"
-                )
-                continue
-              
-            if is_port_in_use(choosen_port):
-                log_with_color(f'Выбранный порт {choosen_port} заняли во время создания vpn конфиг файла.')
-                vpn_configs.insert(0, vpn_link)
-                log('VPN ссылка возвращена на повторную обработку.')
-                continue
-
-            process = subprocess.Popen(["sing-box", "run", "-c", str(config_path)])
 
             try:
-                wait_for_port(choosen_port, process)
+                wait_for_port(selected_port, process)
                 log("VPN запущен.")
-                proxies = update_proxy(choosen_port)
 
-                result = core_algorithm()
+                proxies = update_proxy(selected_port)
 
-                if not result:
+                if not core_algorithm():
                     break
-                
                 used_vpn_links.add(vpn_link)
 
                 log("=========================================")
@@ -1225,5 +1360,6 @@ def main():
                     process.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     process.kill()
+                    process.wait()
   
 main()
